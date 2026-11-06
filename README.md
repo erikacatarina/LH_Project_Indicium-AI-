@@ -1,292 +1,293 @@
-# ⚓ LH Nautical - Plataforma de Dados, Previsão de Demanda e Assistente Inteligente
+# Documentação Power BI| LH Nautical
 
-Solução completa de dados para a **LH Nautical**, um varejo náutico brasileiro (loja física + e-commerce, desde 2020, sede em Florianópolis). O projeto cobre toda a jornada do dado: da extração no sistema transacional até um assistente de inteligência artificial que responde perguntas sobre o negócio em linguagem natural.
+**Arquivo fonte:** `Relatório Executivo de Vendas.pbip`
 
----
+**Documento gerado a partir da leitura direta do modelo semântico (TMDL) e da definição do relatório (PBIR) em 21/08/2026.**
 
-## Sumário
-
-- [Sobre o Projeto](#sobre-o-projeto)
-- [Arquitetura Geral](#arquitetura-geral)
-- [1. Ingestão de Dados](#1-ingestão-de-dados)
-- [2. Modelagem de Dados (dbt)](#2-modelagem-de-dados-dbt)
-- [3. Previsão de Demanda](#3-previsão-de-demanda)
-- [4. Assistente Inteligente (RAG)](#4-assistente-inteligente-rag)
-- [5. Dashboard de Business Intelligence](#5-dashboard-de-business-intelligence)
-- [Como Reproduzir o Ambiente](#como-reproduzir-o-ambiente)
-- [Estrutura do Repositório](#estrutura-do-repositório)
-- [Limitações Conhecidas](#limitações-conhecidas)
-- [Equipe](#equipe)
+Este documento contém o modelo de dados completo, o dicionário de 60 medidas, as páginas do relatório e uma seção de observações técnicas.
 
 ---
 
-## Sobre o Projeto 
+## 1. Visão Geral
 
-A LH Nautical identificou seis dificuldades recorrentes na gestão do negócio:
+O `Relatório Executivo de Vendas` é um dashboard interativo + relatório gerencial da LH Nautical, construído em Power BI Desktop, consumindo o Data Warehouse via Databricks SQL Warehouse.
 
-1. **Faturamento líquido inconsistente** - dificuldade de enxergar receita real, descontada de impostos e devoluções.
-2. **Invisibilidade do cliente omnichannel** - loja física e e-commerce eram enxergados como negócios separados.
-3. **Morosidade na decisão comercial** - informação espalhada, sem relatório consolidado.
-4. **Falta de segmentação de clientes de alto valor** - nenhuma visão de quais clientes geram mais retorno.
-5. **Ruptura de estoque e falta de previsibilidade temporal** - compras reativas, sem previsão de demanda.
-6. **Ineficiência em campanhas por categoria de produto** - dificuldade de identificar produtos/categorias prioritários.
-
-Este repositório resolve as seis, em camadas sucessivas: primeiro organizando o dado (ingestão + modelagem), depois expondo ele em um dashboard executivo (Power BI), e por fim adicionando duas capacidades preditivas - um modelo de previsão de demanda e um assistente de IA que qualquer pessoa do time pode consultar em linguagem natural.
+- **Conector:** `Databricks.Query`, direto ao SQL Warehouse (parâmetros `Servidor` e `HTTP_Path`).
+- **Catálogo/schema de origem:** `prd.gold.*` (todas as 12 Marts).
+- **Modo de armazenamento:** Import.
+- **11 páginas de relatório**, tema customizado (paleta LH Nautical), 2 bookmarks, 1 página de drillthrough, 1 página de tooltip.
 
 ---
 
-## Arquitetura Geral
+## 2. Arquitetura de Conectividade
 
-```
-┌──────────────────────────────────────────────────────────────────────────────────┐
-│                                                                                  │
-│  [SQL Server]  →  [🥉 Bronze]  →  [🥈 Silver]  →  [🥇 Gold]  → ┬─ [Power BI]     │
-│   Sistema de       Ingestão        Modelagem       Dados         │               │
-│   vendas da        (PySpark        dimensional     prontos       ├─ [Modelo      │
-│   loja             + JDBC)         (dbt Core)       para          │  de          │
-│                                                     consumo        │  Previsão]  │
-│                                                                    │             │
-│                                                                    └─ [Assistente│
-│                                                                       de IA/RAG] │
-└──────────────────────────────────────────────────────────────────────────────────┘
-```
+### Parâmetros do modelo (`Parâmetros`)
 
-Toda a plataforma roda sobre **Databricks** (Lakehouse + Unity Catalog), com dois ambientes isolados por catálogo: `dev` (desenvolvimento) e `prd` (produção). O deploy de cada camada é automatizado via **Databricks Asset Bundles** e **Bitbucket Pipelines** - um merge na branch `dev` implanta em desenvolvimento, um merge na branch `main` implanta em produção.
-
----
-
-## 1. Ingestão de Dados
-
-**O que faz:** extrai 13 tabelas do sistema transacional (SQL Server) e as carrega, sem transformação de regra de negócio, na camada Bronze do Lakehouse - a base sobre a qual tudo mais é construído.
-
-| Item | Detalhe |
-|---|---|
-| Tabelas extraídas | 13 (pedidos, itens de pedido, pagamentos, devoluções, clientes, produtos, categorias, marcas, locais, funcionários, notas fiscais, entre outras) - cerca de 293 mil linhas no total |
-| Volume/estratégia | Extração completa (full load) a cada execução - o volume é baixo o suficiente para não exigir carga incremental |
-| Formato de armazenamento | Delta Lake, com escrita em modo `overwrite` - garante que rodar o processo mais de uma vez produz sempre o mesmo resultado |
-| Tecnologia | PySpark, conectando via JDBC (conexão criptografada) |
-| Orquestração | Databricks Workflows - agendado diariamente em produção, execução manual em desenvolvimento |
-| Credenciais | Databricks Secrets - nunca expostas em código ou no repositório |
-
-**Dado sensível:** a tabela de funcionários contém CPF, que é mascarado (mantendo só os últimos dígitos visíveis) antes de chegar em qualquer camada de consumo.
-
----
-
-## 2. Modelagem de Dados (dbt)
-
-**O que faz:** transforma o dado bruto da Bronze num modelo dimensional (esquema estrela) pronto para consumo - 35 modelos ao todo, organizados em três camadas.
-
-| Camada | Modelos | Papel |
+| Parâmetro | Valor / Tipo | Uso |
 |---|---|---|
-| Staging | 13 | Padronização 1:1 com a origem, sem regra de negócio |
-| Intermediate | 10 | Conformação de entidades, correções e enriquecimento |
-| Marts | 12 (9 dimensões + 3 fatos) | Dado final, pronto para análise |
+| `Servidor` | `dbc-47e8ae46-086a.cloud.databricks.com` (texto) | Host do Databricks SQL Warehouse |
+| `HTTP_Path` | `/sql/1.0/warehouses/a9d011bce8dcd209` (texto) | Caminho HTTP do warehouse específico |
+| `RangeStart` | `2026-05-01 00:00:00` (datetime) | Início da janela de Incremental Refresh (valor de design-time) |
+| `RangeEnd` | `2026-05-02 00:00:00` (datetime) | Fim da janela de Incremental Refresh (valor de design-time) |
 
-**As 3 tabelas de fato:**
-- `fct_orders` - vendas, no grão de item de pedido.
-- `fct_returns` - devoluções, no grão de item devolvido.
-- `fct_desempenho_mensal_produto_vendedor` - um snapshot mensal por produto e vendedor.
+> `RangeStart`/`RangeEnd` são parâmetros exigidos pelo Power BI para reconhecer a política de Incremental Refresh, os valores acima são só o intervalo usado durante o desenvolvimento no Desktop.
 
-**As 9 dimensões:** cliente (com segmentação por valor/recência/frequência), produto, calendário (com feriados e marcação de alta temporada náutica), funcionário, local, canal de venda, status do pedido, método de pagamento e status de pagamento.
-
-**Decisões de modelagem que valem registrar:**
-- O grão de vendas e devoluções é o **item**, não o pedido inteiro - isso permite relacionar cada linha diretamente com o produto vendido.
-- Descontos são **rateados proporcionalmente** entre os itens de um mesmo pedido (a origem não guarda desconto por item).
-- Pedidos sem vendedor (compras pelo site) recebem um vendedor padrão, identificado como "E-commerce".
-- "Alta temporada náutica" (dezembro a março) é uma suposição de negócio, baseada no verão brasileiro - período em que a demanda por produtos náuticos tende a subir.
-
-**Qualidade de dado:** todas as chaves primárias e relacionamentos são testados automaticamente, além de quatro testes de negócio específicos (ex.: conferir que a receita líquida bate com a soma dos itens, que não existe ciclo na hierarquia de categorias).
+### Como trocar de ambiente (dev → prd, ou outro workspace)
+Editem os parâmetros `Servidor`/`HTTP_Path` em **Transform Data → Manage Parameters**, sem precisar alterar nenhuma query individualmente, todas as 9 dimensões e 3 fatos referenciam esses dois parâmetros.
 
 ---
 
-## 3. Previsão de Demanda
+## 3. Modelo de Dados (Star Schema)
 
-**O que faz:** prevê a demanda de cada produto, em cada loja e centro de distribuição, para os próximos 3 meses e responde quatro perguntas centrais para o planejamento de estoque e expansão da rede.
+12 tabelas Gold + 2 tabelas utilitárias do Power BI (não vêm do Databricks):
 
-### As quatro perguntas respondidas
+### Tabelas Fato (3)
 
-1. **Quanto cada produto vai vender, em cada local, nos próximos 3 meses?** E existe algum produto com padrão sazonal comprovado estatisticamente?
-2. **Qual modelo de previsão é o mais adequado, e por quê?**
-3. **Qual loja e qual centro de distribuição devem crescer mais?**
-4. **A rede precisa de um novo centro de distribuição? Se sim, onde?**
+| Tabela | Grão | Descrição (do modelo) |
+|---|---|---|
+| `fct_orders` | Item de pedido (`order_item_id`) | Fato de vendas. Sem atributos desnormalizados de produto: nome/marca/categoria vêm via relacionamento com `dim_produtos`. |
+| `fct_returns` | Item devolvido (`return_item_id`) | Fato de devoluções. Sem rastreamento de produto da troca (`exchange_variant_id` removido, decisão de escopo) e sem relação com `dim_employee` (devoluções não têm vendedor). |
+| `fct_desempenho_mensal_produto_vendedor` | Mês + produto + vendedor | Fato de snapshot mensal. Consolida receita líquida (bruta − descontos − impostos − devoluções), quantidade vendida e devolvida. |
 
-### Como a previsão é feita
+### Dimensões (9)
 
-- **Dois modelos independentes**, um para lojas e outro para centros de distribuição os dois nunca são combinados no treino, porque representam tipos de demanda diferentes (venda ao consumidor final vs. movimentação logística entre a rede).
-- **Quatro algoritmos de regressão foram testados e comparados** (Ridge, Random Forest, LightGBM e CatBoost) contra uma base de comparação simples (média móvel).
-- **Modelo escolhido: CatBoost**, para os dois tipos de local. As diferenças de precisão entre os quatro algoritmos testados foram pequenas, a decisão final se baseou na vantagem prática do CatBoost em lidar nativamente com variáveis de categoria de produto, sem exigir pré-processamento adicional.
-- **O modelo supera a previsão ingênua (média móvel) entre 11% e 21%**, dependendo da época do ano, a vantagem é um pouco menor durante a alta temporada, quando a demanda é naturalmente mais imprevisível para qualquer método.
-- Além da previsão pontual, o modelo também estima uma **faixa de confiança** (intervalo de 80%), usada como referência para estoque de segurança.
+| Tabela | Chave | Descrição (do modelo) |
+|---|---|---|
+| `dim_calendar` | `date_key` (isenta de SK) | Date spine diária 2020-01-01 a 2031-01-01, com feriados fixos/móveis e flag de alta temporada náutica. |
+| `dim_clientes` | `customer_sk` | Enriquecida com métricas e segmentação RFM calculada a partir do histórico de pedidos. |
+| `dim_produtos` | `produto_sk` | Grão `product_variant_id` (SKU). Base para rentabilidade por produto/categoria. Não inclui `sku`/`barcode_ean`/`ncm_code` (decisão de escopo). |
+| `dim_employee` | `funcionario_sk` | Versão enxuta — não inclui CPF, e-mail ou datas de contratação/desligamento (decisão de segurança/escopo). Membro default `'E-commerce'` para pedidos sem vendedor. |
+| `dim_locations` | `local_sk` | Locais físicos, compartilhada por `fct_orders`, `dim_employee` e `fct_returns`. Versão enxuta (sem timestamps). |
+| `dim_canal` | `channel_sk` | Canal de venda (pos/ecommerce), construída dinamicamente a partir de `int_orders`. |
+| `dim_order_status` | `order_status_id` (natural) | Status de negócio do pedido, construída dinamicamente. `0` = "sem status registrado". |
+| `dim_metodo_pagamento` | `metodo_pagamento_id` (natural) | Método de pagamento, construída dinamicamente. `0` = "não informado". Inclui `'múltiplos_métodos'` quando um pedido teve mais de um método distinto. |
+| `dim_status_pagamento` | `status_pagamento_id` (natural) | Status de pagamento derivado, construída dinamicamente. `0` = "sem pagamento registrado". `'payment refunded'` ainda cai no fallback `initcap()`, sem descrição curada manualmente. |
 
-### Principais achados
+### Tabelas Utilitárias (não vêm do Databricks)
 
-- **Sazonalidade comprovada estatisticamente** em dois produtos (baterias náuticas, tanto na linha de lojas quanto na de centros de distribuição), o padrão é consistente com a troca/recarga de bateria antes do início da temporada de navegação.
-- **Crescimento por local** e **necessidade de novos centros de distribuição** são reavaliados a cada ciclo de previsão, cruzando o crescimento real de demanda por região com a cobertura já existente da rede, evitando abrir um novo centro de distribuição baseado em ruído estatístico de uma base pequena de vendas.
+| Tabela | Origem | Uso |
+|---|---|---|
+| `Medidas` | Tabela desconectada (Power Query estático) | Abriga as 60 medidas DAX do modelo, organizadas em pastas de exibição. |
+| `Data_Atualizacao` | `DateTime.LocalNow()` capturado no Power Query | Fornece a data do último refresh para a medida `Data de Atualização do Relatório`. Só atualiza quando alguém roda um refresh manual. |
 
-### Onde os resultados vivem
+### Relacionamentos
 
-- Previsões: tabela `fct_previsao_demanda`, no catálogo de produção, atualizada mensalmente.
-- Relatório consolidado, respondendo as quatro perguntas com gráficos: `docs/Relatorio_Analise_Previsao.md` (gerado automaticamente, todo mês).
-- Documentação técnica completa do modelo (métricas, premissas verificadas, limitações): `docs/MODEL_CARD.md`.
+| De | Para | Tipo de chave |
+|---|---|---|
+| `fct_orders.placed_at_key` | `dim_calendar.date_key` | Data (surrogate `_key`) |
+| `fct_returns.data_pedido_original_key` | `dim_calendar.date_key` | Data (surrogate `_key`) |
+| `fct_desempenho_mensal_produto_vendedor.mes_referencia_key` | `dim_calendar.date_key` | Data (surrogate `_key`) |
+| `fct_orders.customer_id` | `dim_clientes.customer_id` | Surrogate Key (hash) |
+| `fct_returns.customer_id` | `dim_clientes.customer_id` | Surrogate Key (hash) |
+| `fct_orders.produto_sk` | `dim_produtos.produto_sk` | Surrogate Key (hash) |
+| `fct_returns.produto_sk` | `dim_produtos.produto_sk` | Surrogate Key (hash) |
+| `fct_desempenho_mensal_produto_vendedor.produto_sk` | `dim_produtos.produto_sk` | Surrogate Key (hash) |
+| `fct_orders.funcionario_sk` | `dim_employee.funcionario_sk` | Surrogate Key (hash) |
+| `fct_desempenho_mensal_produto_vendedor.funcionario_sk` | `dim_employee.funcionario_sk` | Surrogate Key (hash) |
+| `fct_orders.local_sk` | `dim_locations.local_sk` | Surrogate Key (hash) |
+| `fct_returns.local_sk` | `dim_locations.local_sk` | Surrogate Key (hash) |
+| `fct_orders.canal_sk` | `dim_canal.channel_sk` | Surrogate Key (hash) |
+| `fct_orders.order_status_id` | `dim_order_status.order_status_id` | Chave natural (dimensão codificada) |
+| `fct_orders.metodo_pagamento_id` | `dim_metodo_pagamento.metodo_pagamento_id` | Chave natural (dimensão codificada) |
+| `fct_orders.status_pagamento_id` | `dim_status_pagamento.status_pagamento_id` | Chave natural (dimensão codificada) |
+
+**Estratégia de SK/FK observada:** as SKs são geradas via `dbt_utils.generate_surrogate_key()` no dbt. A chave natural é mantida ao lado da SK em quase todas as tabelas para rastreabilidade.
 
 ---
 
-## 4. Assistente Inteligente (RAG)
+## 4. Estratégia de Atualização (Import + Incremental Refresh)
 
-**O que faz:** um assistente conversacional que responde perguntas em português sobre o projeto previsão de demanda, sazonalidade, modelos usados, crescimento por região consultando a documentação e os resultados reais do projeto antes de responder, para nunca inventar informação.
+Política declarada nas 3 tabelas fato (`fct_orders`, `fct_returns`, `fct_desempenho_mensal_produto_vendedor`):
 
-### Como funciona, em linhas gerais
+- **Histórico armazenado (rolling window):** 2 anos.
+- **Granularidade incremental:** mês.
+- **Períodos incrementais:** 3 (equivalente à janela de 3 meses documentada no Planejamento).
 
-1. A documentação do projeto e um resumo das previsões mais recentes são organizados em pequenos trechos pesquisáveis.
-2. Quando alguém faz uma pergunta, o assistente busca os trechos mais relevantes para aquela pergunta.
-3. Um modelo de linguagem gera a resposta **usando apenas esses trechos como base** - se a informação não estiver disponível, o assistente responde que não sabe, em vez de inventar um número ou um fato.
+**Justificativa registrada no projeto:** o SQL Warehouse do Databricks Free Edition é serverless e pausa por inatividade. O import evita risco de lentidão numa demonstração ao vivo; Incremental Refresh atende à exigência de estratégia para volume sem abrir mão dessa estabilidade.
 
-### Camadas de segurança
-
-Antes de qualquer resposta ser gerada, a pergunta passa por verificações automáticas que:
-- Removem dados sensíveis (como CPF ou e-mail) da pergunta antes de qualquer processamento.
-- Bloqueiam tentativas de manipular o assistente para ignorar suas instruções.
-- Barram pedidos de conteúdo impróprio, perigoso ou fora do propósito do assistente (que é falar sobre este projeto).
-
-A resposta final também passa por uma segunda checagem, antes de ser entregue.
-
-### Como usar
-
-O assistente está disponível como um aplicativo interno no Databricks (Databricks Apps), qualquer pessoa do time com acesso ao workspace pode abrir a interface e conversar com ele diretamente, sem precisar de conhecimento técnico.
+> ⚠️ A atualização incremental está pré-configurada porém como a volumetria de dados ainda é baixa ela não está ativa. Em cenários futuros, caso seja necessário ativa a atualização incremental, basta descomentar o filtro aplicado com cláusula Where nas tabelas fatos do modelo semântico.
 
 ---
 
-## 5. Dashboard de Business Intelligence
+## 5. Dicionário de Medidas
 
-**O que faz:** um relatório executivo interativo (Power BI), com 11 páginas, conectado diretamente aos dados de produção cobrindo faturamento, comportamento de pedidos, distribuição geográfica, perfil de clientes e desempenho de produtos.
+Total: **60 medidas**, organizadas nas pastas de exibição (`displayFolder`) já definidas no modelo. Fórmula reproduzida exatamente como está no `.tmdl` (comentário original do autor incluído, quando presente).
 
-### Principais páginas
 
-| Página | O que mostra |
+### Dor 1: Faturamento Líquido Inconsistente (9 medidas)
+
+| Medida | Fórmula DAX | Formato |
+|---|---|---|
+| `Receita Bruta` | -- Medida que calcula receita bruta dos pedidos da tabela fct_orders SUM ( fct_orders[line_total] ) | `"R$"\ #,0.00;-"R$"\ #,0.00;"R$"\ #,0.00` |
+| `Desconto Total` | -- Medida que calcula o desconto total do item de pedido da tabela fct_orders SUM ( fct_orders[desconto_rateado_item] ) | `"R$"\ #,0.00;-"R$"\ #,0.00;"R$"\ #,0.00` |
+| `Receita Líquida` | -- Medida que calcula receita líquida (antes dos impostos) dos pedidos da tabela fct_orders SUM ( fct_orders[valor_liquido_item] ) | `"R$"\ #,0.00;-"R$"\ #,0.00;"R$"\ #,0.00` |
+| `Valor de Impostos` | -- Medida que calcula o valor dos impostos dos pedidos SUM(fct_orders[valor_imposto]) | `"R$"\ #,0.00;-"R$"\ #,0.00;"R$"\ #,0.00` |
+| `Receita Líquida Após Impostos` | --Medida que calcula receita líquida (após os impostos) de pedidos da tabela fct_orders [Receita Líquida] - [Valor de Impostos] | `"R$"\ #,0.00;-"R$"\ #,0.00;"R$"\ #,0.00` |
+| `Valor Devolvido` | -- Medida que calcula o valor devolvido de pedidos devolvidos SUM ( fct_returns[valor_reembolsado_item] ) | `"R$"\ #,0.00;-"R$"\ #,0.00;"R$"\ #,0.00` |
+| `Taxa de Devolução %` | -- Medida que calcula o percentual de pedidos devolvidos DIVIDE ( [Valor Devolvido], [Receita Bruta] ) | `#,0.00%;-#,0.00%;#,0.00%` |
+| `Pedidos Cancelados` | -- Medida que calcula pedidos distintos que foram cancelados CALCULATE ( [Quantidade de Pedidos], dim_order_status[order_status] = "cancelled" ) | `#,0` |
+| `Taxa de Cancelamento %` | -- Medida que calcula o percentual de pedidos cancelados DIVIDE ( [Pedidos Cancelados], [Quantidade de Pedidos] ) | `#,0.00%;-#,0.00%;#,0.00%` |
+
+### Dor 2: Omnichannel (10 medidas)
+
+| Medida | Fórmula DAX | Formato |
+|---|---|---|
+| `Quantidade de Pedidos` | -- Medida que calcula a quantidade distinta de pedidos na tabela fct_orders DISTINCTCOUNT ( fct_orders[order_id] ) | `#,0` |
+| `Ticket Médio` | -- Medida que calcula o ticket médio para os pedidos (antes dos impostos) DIVIDE ( [Receita Líquida], [Quantidade de Pedidos] ) | `"R$"\ #,0.00;-"R$"\ #,0.00;"R$"\ #,0.00` |
+| `Ticket Médio Após Impostos` | -- Medida que calcula o ticket médio para os pedidos (após impostos) DIVIDE ( [Receita Líquida Após Impostos], [Quantidade de Pedidos] ) | `"R$"\ #,0.00;-"R$"\ #,0.00;"R$"\ #,0.00` |
+| `Média de Itens por Pedido (un)` | -- Medida que calcula a quantidade média de itens efetuados em um único pedido ROUNDDOWN( DIVIDE ( SUM ( fct_orders[quantity] ), [Quantidade de Pedidos] ), 0 ) | `#,0` |
+| `% Participação de Receita por Canal` | -- Medida que calcula a participação dos canais no total da receita (antes dos impostos) DIVIDE ( [Receita Líquida], CALCULATE ( [Receita Líquida], ALL ( dim_canal ) ) ) | `#,0.00%;-#,0.00%;#,0.00%` |
+| `% Participação de Receita Líquida Após Impostos por Canal` | -- Medida que calcula a participação dos canais no total da receita (após os impostos) DIVIDE ( [Receita Líquida Após Impostos], CALCULATE ( [Receita Líquida Após Impostos], ALL ( dim_canal ) ) ) | `#,0.00%;-#,0.00%;#,0.00%` |
+| `Receita E-commerce Após Impostos` | -- Medida que calcula a receita líquida para o canal e-commerce, isoladamente (após impostos) CALCULATE ( [Receita Líquida Após Impostos], dim_canal[descricao_canal] = "E-commerce" ) | `"R$"\ #,0.00;-"R$"\ #,0.00;"R$"\ #,0.00` |
+| `Receita Loja Física Após Impostos` | -- Medida que calcula a receita líquida para o canal da loja física, isoladamente (após impostos) CALCULATE ( [Receita Líquida Após Impostos], dim_canal[descricao_canal] = "Loja Física" ) | `"R$"\ #,0.00;-"R$"\ #,0.00;"R$"\ #,0.00` |
+| `Ticket Médio E-commerce Após Impostos` | -- Medida que calcula o ticket médio para o canal do e-commerce, isoladamente (após impostos) VAR _receita_e_commerce = [Receita E-commerce Após Impostos] VAR _pedidos_e_commerce = CALCULATE([Quantidade de Pedidos], dim_canal[descricao_canal] = "E-Commerce") VAR _resultado = DIVIDE(_receita_e_commerce,_pedidos_e_commerce) RETURN _resultado | `"R$"\ #,0.00;-"R$"\ #,0.00;"R$"\ #,0.00` |
+| `Ticket Médio Loja Fisica Após Impostos` | -- Medida que calcula o ticket médio para o canal da loja física, isoladamente (após impostos) VAR _receita_loja_fisica = [Receita Loja Física Após Impostos] VAR _pedidos_loja_fisica = CALCULATE([Quantidade de Pedidos], dim_canal[descricao_canal] = "Loja Física") VAR _resultado = DIVIDE(_receita_loja_fisica,_pedidos_loja_fisica) RETURN _resultado | `"R$"\ #,0.00;-"R$"\ #,0.00;"R$"\ #,0.00` |
+
+### Dor 5: Sazonalidade / Time Intelligence (12 medidas)
+
+| Medida | Fórmula DAX | Formato |
+|---|---|---|
+| `Receita Líquida Ano Anterior` | -- Medida que calcula a receita líquida do ano anterior CALCULATE ( [Receita Líquida], SAMEPERIODLASTYEAR ( dim_calendar[data] ) ) | `"R$"\ #,0.00;-"R$"\ #,0.00;"R$"\ #,0.00` |
+| `Variação da Receita Após Impostos YoY %` | -- -- Medida que calcula a variação da receita YoY (percentual) DIVIDE ( [Receita Líquida Após Impostos] - [Receita Líquida Após Impostos Ano Anterior], [Receita Líquida Após Impostos Ano Anterior] ) | `#,0.00%;-#,0.00%;#,0.00%` |
+| `Receita Líquida Após Impostos YTD` | -- Medida que calcula a receita líquida acumulada no ano YTD (após impostos) TOTALYTD ( [Receita Líquida Após Impostos], dim_calendar[data] ) | `"R$"\ #,0.00;-"R$"\ #,0.00;"R$"\ #,0.00` |
+| `Receita Líquida Após Impostos Alta Temporada` | -- Medida que calcula a receita líquida na alta temporada náutica (após impostos) CALCULATE ( [Receita Líquida Após Impostos], dim_calendar[alta_temporada_nautica] = TRUE () ) | `"R$"\ #,0.00;-"R$"\ #,0.00;"R$"\ #,0.00` |
+| `% Receita Após Impostos em Alta Temporada` | -- Medida que calcula o percentual de receita em alta temporada (após impostos) DIVIDE ( [Receita Líquida Após Impostos Alta Temporada], [Receita Líquida] ) | `#,0.00%;-#,0.00%;#,0.00%` |
+| `Pedidos Ano Anterior` | -- Medida que calcula a quantidade de pedidos do ano anterior CALCULATE ( [Quantidade de Pedidos], SAMEPERIODLASTYEAR ( dim_calendar[data] ) ) | `#,0` |
+| `Variação da Quantidade de Pedidos YoY %` | -- -- Medida que calcula a variação da quantidade YoY (percentual) DIVIDE ( [Quantidade de Pedidos] - [Pedidos Ano Anterior], [Pedidos Ano Anterior] ) | `#,0.00%;-#,0.00%;#,0.00%` |
+| `Ticket Médio Após Impostos Ano Anterior` | -- -- Medida que calcula o valor do ticket médio em relação ao ano anterior CALCULATE ( [Ticket Médio Após Impostos], SAMEPERIODLASTYEAR ( dim_calendar[data] ) ) | `"R$"\ #,0.00;-"R$"\ #,0.00;"R$"\ #,0.00` |
+| `Variação do Ticket Médio Após Impostos YoY %` | -- Medida que calcula a variação do ticket médio YoY (percentual) DIVIDE ( [Ticket Médio Após Impostos] - [Ticket Médio Após Impostos Ano Anterior], [Ticket Médio Após Impostos Ano Anterior] ) | `#,0.00%;-#,0.00%;#,0.00%` |
+| `Receita Líquida Após Impostos Ano Anterior` | -- Medida que calcula a receita líquida do ano anterior (após impostos) CALCULATE ( [Receita Líquida Após Impostos], SAMEPERIODLASTYEAR ( dim_calendar[data] ) ) | `\$#,0.000;-\$#,0.000;\$#,0.000` |
+| `Taxa de Devolução Ano anterior` | -- Medida que calcula a taxa de devolução do ano anterior CALCULATE( [Taxa de Devolução %], SAMEPERIODLASTYEAR(dim_calendar[data]) ) | `#,0.00%;-#,0.00%;#,0.00%` |
+| `Variação Taxa de Devolução YoY %` | -- Medida que calcula a variação do ticket médio YoY (percentual) DIVIDE ( [Taxa de Devolução %] - [Taxa de Devolução Ano anterior], [Taxa de Devolução Ano anterior] ) | `#,0.00%;-#,0.00%;#,0.00%` |
+
+### Dor 6: Margens e Custo (6 medidas)
+
+| Medida | Fórmula DAX | Formato |
+|---|---|---|
+| `Custo Total Vendido` | -- Medida que calcula o custo total vendido SUMX ( fct_orders, fct_orders[quantity] * RELATED ( dim_produtos[cost_price] ) ) | `"R$"\ #,0.00;-"R$"\ #,0.00;"R$"\ #,0.00` |
+| `Margem Bruta Realizada Após Impostos` | -- Medida que calcula a margem bruta realizada (após os impostos) [Receita Líquida Após Impostos] - [Custo Total Vendido] | `"R$"\ #,0.00;-"R$"\ #,0.00;"R$"\ #,0.00` |
+| `Margem Bruta Realizada %` | -- Medida que calcula a margem bruta realizada (antes dos impostos) DIVIDE ( [Margem Bruta Realizada Após Impostos], [Receita Líquida] ) | `#,0.00%;-#,0.00%;#,0.00%` |
+| `Margem Catálogo (Referência)` | -- Medida que calcula a margem por produto de acordo com o previsto em catálogo SUMX ( fct_orders, RELATED ( dim_produtos[unit_gross_margin] ) * fct_orders[quantity] ) | `"R$"\ #,0.00;-"R$"\ #,0.00;"R$"\ #,0.00` |
+| `Gap Margem Catálogo x Realizada` | -- Medida que calcula o gap entre a margem prevista e a margem realizada nas vendas de produtos [Margem Bruta Realizada Após Impostos]-[Margem Catálogo (Referência)] | `"R$"\ #,0.00;-"R$"\ #,0.00;"R$"\ #,0.00` |
+| `Rank Produto por Margem` | -- Medida que calcula o rank dos produtos baseado na margem bruta RANKX ( ALL ( dim_produtos[product_name] ), [Margem Bruta Realizada Após Impostos], , DESC ) | `#,0` |
+
+### Rankings e Acumulados (7 medidas)
+
+| Medida | Fórmula DAX | Formato |
+|---|---|---|
+| `Rank Produto por Receita Após Impostos` | -- Medida que calcula o ranking dinâmico de produtos por receita (após impostos) RANKX ( ALLSELECTED ( dim_produtos[product_name] ), [Receita Líquida Após Impostos], , DESC ) | `#,0` |
+| `Rank Vendedor por Receita Após Impostos` | -- Medida que calcula o ranking de vendedores por receita (após impostos) RANKX ( ALL ( dim_employee[full_name] ), [Receita Líquida Após Impostos], , DESC ) | `#,0` |
+| `Rank Região por Receita Após Impostos` | -- Medida que calcula o ranking de regiões por participação (após impostos) RANKX ( ALL ( dim_locations[state] ), [Receita Líquida Após Impostos] , , DESC ) | `#,0` |
+| `Receita Após Impostos Acumulada` | -- Medida que calcula a receita acumulada (running total) por data (após impostos) CALCULATE ( [Receita Líquida Após Impostos], FILTER ( ALLSELECTED ( dim_calendar[data] ), dim_calendar[data] <= MAX ( dim_calendar[data] ) ) ) | `"R$"\ #,0.00;-"R$"\ #,0.00;"R$"\ #,0.00` |
+| `% Acumulado Receita Após Impostos Produto` | -- Medida que calcula a curva ABC de produtos VAR RankAtual = [Rank Produto por Receita Após Impostos] RETURN DIVIDE ( CALCULATE ( [Receita Líquida Após Impostos], FILTER ( ALL ( dim_produtos[product_name] ), [Rank Produto por Receita Após Impostos] <= RankAtual ) ), CALCULATE ( [Receita Líquida Após Impostos], ALL ( dim_produtos[product_name] ) ) ) | `#,0.00%;-#,0.00%;#,0.00%` |
+| `Classificação ABC` | -- Medida que classifica o produto nas faixas de curva ABC SWITCH ( TRUE (), [% Acumulado Receita Após Impostos Produto] <= 0.8, "A", [% Acumulado Receita Após Impostos Produto] <= 0.95, "B", "C" ) | `—` |
+| `Margem Acumulada` | -- Medida que calcula o acumulado de margem ao longo do tempo CALCULATE ( [Margem Bruta Realizada Após Impostos], FILTER ( ALLSELECTED ( dim_calendar[data] ), dim_calendar[data] <= MAX ( dim_calendar[data] ) ) ) | `"R$"\ #,0.00;-"R$"\ #,0.00;"R$"\ #,0.00` |
+
+### Cards (8 medidas)
+
+| Medida | Fórmula DAX | Formato |
+|---|---|---|
+| `CARD Variação Receita Líquida Após Impostos` | VAR _VARIACAO = [Variação da Receita Após Impostos YoY %] VAR _FORMAT = SWITCH( TRUE(), _VARIACAO > 0, UNICHAR(129033) & " " & FORMAT(_VARIACAO, "0.0%;0.0%"), _VARIACAO < 0, UNICHAR(129035) & " " & FORMAT(_VARIACAO, "0.0%;0.0%"), FORMAT(_VARIACAO, "0.0%;0.0%") ) RETURN _FORMAT | `—` |
+| `CARD Variação Pedidos % YoY` | VAR _VARIACAO = [Variação da Quantidade de Pedidos YoY %] VAR _FORMAT = SWITCH( TRUE(), _VARIACAO > 0, UNICHAR(129033) & " " & FORMAT(_VARIACAO, "0.0%;0.0%"), _VARIACAO < 0, UNICHAR(129035) & " " & FORMAT(_VARIACAO, "0.0%;0.0%"), FORMAT(_VARIACAO, "0.0%;0.0%") ) RETURN _FORMAT | `—` |
+| `CARD Variação Ticket Medio % YoY` | VAR _VARIACAO = [Variação do Ticket Médio Após Impostos YoY %] VAR _FORMAT = SWITCH( TRUE(), _VARIACAO > 0, UNICHAR(129033) & " " & FORMAT(_VARIACAO, "0.0%;0.0%"), _VARIACAO < 0, UNICHAR(129035) & " " & FORMAT(_VARIACAO, "0.0%;0.0%"), FORMAT(_VARIACAO, "0.0%;0.0%") ) RETURN _FORMAT | `—` |
+| `CARD Taxa de Devolução % YoY` | VAR _VARIACAO = [Variação Taxa de Devolução YoY %] VAR _FORMAT = SWITCH( TRUE(), _VARIACAO > 0, UNICHAR(129033) & " " & FORMAT(_VARIACAO, "0.0%;0.0%"), _VARIACAO < 0, UNICHAR(129035) & " " & FORMAT(_VARIACAO, "0.0%;0.0%"), FORMAT(_VARIACAO, "0.0%;0.0%") ) RETURN _FORMAT | `—` |
+| `Clientes Alto Valor` | CALCULATE ( DISTINCTCOUNT ( dim_clientes[customer_id] ), dim_clientes[segmento_rfm] = "Alto Valor" ) | `#,0` |
+| `Clientes Inativos` | CALCULATE ( DISTINCTCOUNT ( dim_clientes[customer_id] ), dim_clientes[segmento_rfm] = "Inativo" ) | `#,0` |
+| `%Clientes Alto Valor` | DIVIDE ( [Clientes Alto Valor], DISTINCTCOUNT ( dim_clientes[customer_id] ) ) | `—` |
+| `Contagem de Clientes` | DISTINCTCOUNT(dim_clientes[customer_id]) | `#,0` |
+
+### Geral (8 medidas)
+
+| Medida | Fórmula DAX | Formato |
+|---|---|---|
+| `qtd_linhas_fct_orders` | -- Medida que calcula a quantidade de registros presentes na tabela fct_orders COUNTROWS(fct_orders) | `#,0` |
+| `qtd_linhas_fct_returns` | -- Medida que calcula a quantidade de registros presentes na tabela fct_returns COUNTROWS(fct_returns) | `#,0` |
+| `qtd_linhas_fct_desempenho` | -- Medida que calcula a quantidade de registros presentes na tabela fct_desempenho_mensal COUNTROWS(fct_desempenho_mensal_produto_vendedor) | `#,0` |
+| `Intervalo Médio entre Vendas (dias)` | -- Calcula o tempo médio necessário para que aconteça uma venda de um produto. VAR DatasVenda = VALUES ( fct_orders[placed_at] ) VAR QtdDatas = COUNTROWS ( DatasVenda ) VAR PrimeiraData = MINX ( DatasVenda, fct_orders[placed_at] ) VAR UltimaData = MAXX ( DatasVenda, fct_orders[placed_at] ) RETURN IF ( QtdDatas > 1, DIVIDE ( DATEDIFF ( PrimeiraData, UltimaData, DAY ), QtdDatas - 1 ) ) | `#,0` |
+| `Blank` | BLANK() | `#,0` |
+| `Período de Referência` | VAR _DATAMIN = FORMAT(MIN(dim_calendar[data]), "DD/MM/YYYY") VAR _DATAMAX = FORMAT(MAX(dim_calendar[data]), "DD/MM/YYYY") VAR _PERIODO = "De" & " " & _DATAMIN & " À " & _DATAMAX RETURN _PERIODO | `—` |
+| `Data de Atualização do Relatório` | FORMAT ( MAX ( Data_Atualizacao[DataAtualizacao] ), "dd/mm/yyyy" ) | `—` |
+| `Data Emissão` | FORMAT(TODAY(), "dd/mm/yyyy") | `—` |
+---
+
+## 6. Páginas do Relatório
+
+Ordem de navegação (`pageOrder`), com dimensão e visibilidade real observada no arquivo:
+
+| # | Página | Dimensão | Visibilidade | Tipo/Observação |
+|---|---|---|---|---|
+| 1 | Capa | 1280×720 | Oculta da navegação padrão | Landing page do relatório (`landingPageName`) |
+| 2 | Geral | 1280×720 | Oculta da navegação padrão | Visão executiva (macro) — 30 visuais |
+| 3 | Pedidos | 1280×720 | Oculta da navegação padrão | 32 visuais; contém os 2 bookmarks ("Ver Mapa"/"Ver Matriz") |
+| 4 | Regiões | 1280×720 | Oculta da navegação padrão | 27 visuais |
+| 5 | Clientes | 1280×720 | Oculta da navegação padrão | 20 visuais (RFM) |
+| 6 | Produtos | 1280×720 | Oculta da navegação padrão | 19 visuais — página adicional além do escopo original de 3 eixos, cobrindo a Dor 6 (margem/Curva ABC) |
+| 7 | Capa A4 | 2480×3508 (A4) | Visível | Capa do relatório gerencial exportável em PDF |
+| 8 | Relatório Gerencial | 2480×3508 (A4) | Visível | 15 visuais; filtro de página fixo em `dim_calendar[ano]` |
+| 9 | Apêndice | 1920×1080 | Oculta da navegação padrão | **Tipo: Tooltip** — página de glossário/contexto desenhada no Figma, acessada via hover |
+| 10 | Detalhamento de Vendas | 1280×720 | Oculta da navegação padrão | **Tipo: Drillthrough** — 17 campos de drill configurados (ano, mês, canal, cliente, vendedor, local, produto, categoria, marca, método/status de pagamento, status do pedido) |
+| 11 | Page 1 | 1280×720 | Oculta da navegação padrão | Sem visuais — parece ser página residual/não utilizada |
+
+**Padrão de navegação inferido:** quase todas as páginas estão marcadas como ocultas da faixa de abas padrão do Power BI (`HiddenInViewMode`) — consistente com uma navegação 100% por botões/bookmarks customizados, não pela barra de abas nativa. Só "Capa A4" e "Relatório Gerencial" (as páginas de exportação em PDF) ficam visíveis somente para intuito de exportação do relatório de forma manual ou automatizada no serviço do PowerBI.
+
+### Bookmarks
+| Nome | Página ativa | Efeito |
+|---|---|---|
+| Ver Mapa | Pedidos | Alterna a visualização para exibir o mapa |
+| Ver Matriz | Pedidos | Alterna a visualização para exibir a matriz |
+
+### Recursos visuais registrados (Figma → Power BI)
+Ícones/imagens customizados encontrados em `StaticResources/RegisteredResources`: Apêndice, Drill(through), Produtos, Relatório Geral, Relatório por Cliente, Relatório por Pedido, Relatório por Região, Capa, Cover, Relatório A4 — confirma que a navegação usa ícones desenhados no Figma em vez dos botões padrão do Power BI.
+
+---
+
+## 7. Tema e Paleta de Cores
+
+Tema customizado `Lh_Nautical_Palette`, com as cores confirmando exatamente a paleta documentada no Planejamento:
+
+| Papel semântico | Cor |
 |---|---|
-| Geral | Visão executiva macro - receita, pedidos, ticket médio, comparação com o ano anterior |
-| Pedidos | Detalhamento de pedidos, com opção de visualizar em mapa ou em tabela |
-| Regiões | Desempenho por localização geográfica |
-| Clientes | Segmentação de clientes por valor e frequência de compra |
-| Produtos | Ranking de produtos por receita e margem, curva ABC |
-| Relatório Gerencial | Versão formatada para exportação em PDF, com filtro por ano |
+| `good` (tendência positiva) | `#386641` |
+| `bad` (tendência negativa) | `#780000` |
+| `neutral` | `#8D8F8E` |
+| Paleta base (`dataColors`, 5 primeiras) | `#2F6690`, `#3A7CA5`, `#303240`, `#E8E8E8`, `#8D8F8E` |
 
-### Como os dados chegam até o Power BI
-
-O relatório se conecta diretamente ao catálogo de produção do Databricks, importando as 12 tabelas de dado finais (dimensões e fatos). Para trocar de ambiente (por exemplo, de desenvolvimento para produção), basta atualizar dois parâmetros de conexão, nenhuma consulta individual precisa ser alterada.
-
-Documentação técnica completa (dicionário de medidas, modelo de dados, tema visual): `docs/Documentacao_PowerBI.md`.
+O tema estende a paleta original com cores adicionais geradas automaticamente (tons complementares) para suportar visuais com mais de 5 categorias — essas cores extras não estão documentadas no Planejamento e não têm significado de negócio atribuído.
 
 ---
 
-## Como Reproduzir o Ambiente
+## 8. Como Atualizar o Relatório
 
-### Pré-requisitos
-
-- Python 3.10+
-- Acesso a um workspace Databricks com Unity Catalog
-- Um SQL Warehouse ativo no workspace
-- Databricks CLI (versão com suporte a `bundle`):
-  ```bash
-  curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
-  databricks configure --token
-  ```
-
-### Configuração inicial (uma única vez por workspace)
-
-```bash
-python infra/setup_catalogs.py
-```
-Cria os catálogos `dev` e `prd`, e os schemas `bronze`, `silver` e `gold` em cada um.
-
-### Rodando a ingestão e a modelagem localmente
-
-```bash
-# Ingestão
-python src/ingestion/ingest_bronze.py --catalog dev
-
-# Modelagem (dbt)
-cd dbt/lh_nautical
-pip install -r requirements.txt
-dbt deps
-cp .env.example .env   # preencher com suas credenciais
-dotenv run -- dbt build
-```
-
-### Rodando a previsão de demanda e o assistente de IA
-
-```bash
-# Na raiz do repositório
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env   # preencher com suas credenciais
-```
-
-A geração da previsão e a atualização do assistente rodam como jobs agendados no Databricks, não exigem execução manual no dia a dia. Para rodar manualmente:
-```bash
-databricks bundle run lh_nautical_producao_mensal --target prd
-databricks bundle run lh_nautical_rag_chunking --target prd
-```
-
-### Deploy
-
-```bash
-databricks bundle validate
-databricks bundle deploy --target dev   # ou --target prd
-```
-O deploy também acontece automaticamente a cada merge nas branches `dev` e `main`, via Bitbucket Pipelines.
+1. Abram `Relatório Executivo de Vendas.pbip` no Power BI Desktop.
+2. **Home → Refresh.** O Power BI reconecta ao Databricks usando os parâmetros `Servidor`/`HTTP_Path` e reimporta todas as 12 tabelas Gold, mais recalcula `Data_Atualizacao` (timestamp do refresh).
+3. **Atenção ao SQL Warehouse:** como é serverless (Databricks Free Edition), a primeira consulta após um período de inatividade pode demorar mais — é esperado, não é erro.
+4. Sem conta/licença Power BI, todo o ciclo de atualização acontece localmente no Desktop — não há refresh agendado automático possível neste ambiente.
+5. Para exportar o relatório gerencial em PDF: naveguem até a página "Relatório Gerencial" (ou "Capa A4") e usem **File → Export → Export to PDF** — decisão de arquitetura registrada no Planejamento (ausência de licença Pro/PPU para Report Builder).
+6. Uma vez publicado no serviço do PowerBI o relatório pode ser atualizado diariamente com a configuração de atualizações automática nas configurações do modelo semântico.
+7. Para a configuração das atualizações automáticas no serviço do PowerBI, será necessário incluir as credenciais de acesso ao workspace do databricks em que as tabelas e schemas residem.
 
 ---
 
-## Estrutura do Repositório
+## 9. Rastreabilidade às Dores de Negócio
 
-```
-lh-nautical/
-├── bitbucket-pipelines.yml
-├── databricks.yml
-├── README.md                          # este arquivo
-├── infra/
-│   └── setup_catalogs.py
-├── src/
-│   ├── ingestion/
-│   │   └── ingest_bronze.py
-│   ├── forecast/                      # previsão de demanda
-│   ├── rag/                           # assistente de IA
-│   └── relatorio/                     # geração automática do relatório de previsão
-├── app/                               # aplicativo do assistente de IA (Databricks Apps)
-├── dbt/
-│   └── lh_nautical/
-│       ├── models/
-│       │   ├── staging/
-│       │   ├── intermediate/
-│       │   └── marts/
-│       ├── macros/
-│       ├── seeds/
-│       └── tests/
-└── docs/
-    ├── MODEL_CARD.md                  # documentação técnica do modelo de previsão e do RAG
-    ├── Relatorio_Analise_Previsao.md  # relatório de negócio, atualizado mensalmente
-    ├── Documentacao_PowerBI.md        # documentação técnica do dashboard
-    └── relatorios/                    # histórico mensal de relatórios e gráficos
-```
+As pastas de exibição das medidas já mapeiam diretamente para as dores que foram mapeadas anteriormente:
+
+| Dor de Negócio | Pasta de Medidas | Páginas relacionadas |
+|---|---|---|
+| 1 — Faturamento líquido inconsistente | `Dor 1 Faturamento Líquido Inconsistente` | Geral, Relatório Gerencial |
+| 2 — Invisibilidade omnichannel | `Dor 2 Omnichannel` | Pedidos, Geral |
+| 3 — Morosidade na decisão comercial | Sem medida dedicada | É uma dor resolvida pela materialização do relatório |
+| 4 — Falta de segmentação de clientes | (medidas RFM em `Cards`: Clientes Alto Valor/Inativos) | Clientes |
+| 5 — Sazonalidade/previsibilidade | `Dor 5 Sazonalidade / Time Intelligence` | Geral, Relatório Gerencial |
+| 6 — Ineficiência em campanhas por categoria | `Dor 6`, `Rankings e Acumulados` | Produtos |
+
+
 
 ---
 
-## Limitações Conhecidas
+## 10. Créditos e Convenções
 
-- O cálculo de imposto é uma aproximação (soma simples de alíquotas) - a origem não guarda o valor de imposto já calculado por item.
-- O período de "alta temporada náutica" é uma suposição de negócio, não uma medição direta de sazonalidade real de mercado.
-- Combinações de produto e local com histórico de vendas insuficiente usam uma estimativa simplificada (média da categoria), em vez do modelo completo de previsão.
-- A precisão do modelo de previsão cai um pouco durante a alta temporada, quando a demanda é naturalmente mais volátil - uma oportunidade de melhoria já identificada para trabalho futuro.
-- O assistente de IA ocasionalmente pode deixar de recuperar a informação mais relevante para perguntas muito específicas - uma limitação conhecida de sistemas de busca por similaridade, sendo monitorada e documentada em `docs/MODEL_CARD.md`.
-
----
-
-## Equipe
-
-**Representante de Negócios:** Aline Satomi Noce
-
-**Time de Desenvolvimento:** Bruna Aparecida da Silva Santos Nogueira, Carla Lira Rodrigues, Erika Catarina e Renan Amaral de Oliveira
-
-**Stakeholders:** Beatriz Kenup, Hevans Vinicius Pereira e Leonardo Gasparotto Menini
+- **Convenção de nomenclatura de medidas:** português, nome de negócio direto (`Receita Líquida`, `Ticket Médio`), sufixo `Após Impostos` quando a variante deduz imposto.
+- **Convenção de SK:** sufixo `_sk` (string, hash), sempre oculta (`isHidden`) no modelo, mantida ao lado da chave natural quando presente.
+- **Convenção de chave de data:** sufixo `_key` (int, formato `yyyyMMdd`), sempre oculta.
+- **Pastas de exibição:** nomeadas pela dor de negócio que resolvem (`Dor 1 ...`, `Dor 2 ...` etc.), com `Cards`, `Rankings e Acumulados` e `Geral` para medidas transversais/utilitárias.
