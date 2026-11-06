@@ -1,0 +1,17 @@
+# Configuração do Ruff — LH Nautical
+line-length = 250
+target-version = "py310"
+
+[lint]
+select = [
+    "E",   # pycodestyle (erros)
+    "F",   # pyflakes
+    "I",   # isort (ordenação de imports)
+    "D",   # pydocstyle (docstrings)
+]
+ignore = [
+    "D203",  # conflita com D211 (linha em branco antes da classe)
+]
+
+[lint.pydocstyle]
+convention = "google"

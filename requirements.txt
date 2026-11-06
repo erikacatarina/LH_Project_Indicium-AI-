@@ -1,0 +1,17 @@
+pandas
+numpy
+databricks-sql-connector
+python-dotenv
+pytest
+mlflow
+ruff
+optuna
+scikit-learn
+lightgbm
+catboost
+statsmodels
+scipy
+python-docx
+databricks-ai-search
+databricks-sdk[openai]
+matplotlib

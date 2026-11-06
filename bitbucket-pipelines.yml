@@ -1,0 +1,62 @@
+# CI/CD — LH Nautical
+# Bitbucket Pipelines — validação dbt + deploy automático via Databricks Asset Bundles
+#
+# Fluxo:
+#   merge em dev  → valida dbt (catálogo dev)  → bundle deploy --target dev
+#   merge em main → valida dbt (catálogo prd)  → bundle deploy --target prd
+#
+# Variáveis necessárias (Repository variables, todas Secured):
+#   DATABRICKS_HOST      → URL do workspace Databricks
+#   DATABRICKS_TOKEN     → Personal Access Token de autenticação
+#   DATABRICKS_HTTP_PATH → Caminho do SQL Warehouse (/sql/1.0/warehouses/...)
+#
+# Nota: branch Git não define diretamente o ambiente de dados.
+# Quem define é o --target do DAB + o --catalog passado ao script/dbt.
+
+image: python:3.11
+
+pipelines:
+  branches:
+    dev:
+      - step:
+          name: "Validação dbt (seed/run/test/build)"
+          script:
+            - export DATABRICKS_CATALOG=dev
+            - export DATABRICKS_SCHEMA=silver
+            - export DBT_PROFILES_DIR=$(pwd)/dbt/lh_nautical/profiles
+            - pip install -r dbt/lh_nautical/requirements.txt
+            - cd dbt/lh_nautical
+            - dbt deps
+            - dbt seed
+            - dbt run
+            - dbt test
+            - dbt build
+
+      - step:
+          deployment: test
+          name: "Deploy para Dev"
+          script:
+            - curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
+            - databricks bundle deploy --target dev
+
+    main:
+      - step:
+          name: "Validação dbt (seed/run/test/build)"
+          script:
+            - export DATABRICKS_CATALOG=prd
+            - export DATABRICKS_SCHEMA=silver
+            - export DBT_PROFILES_DIR=$(pwd)/dbt/lh_nautical/profiles
+            - pip install -r dbt/lh_nautical/requirements.txt
+            - cd dbt/lh_nautical
+            - dbt deps
+            - dbt seed
+            - dbt run
+            - dbt test
+            - dbt build
+
+      - step:
+          deployment: production
+          name: "Deploy para Produção"
+          script:
+            - curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
+            - databricks bundle deploy --target prd

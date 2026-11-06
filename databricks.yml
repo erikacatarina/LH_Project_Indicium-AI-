@@ -1,0 +1,374 @@
+# Databricks Asset Bundle — LH Nautical
+
+# Databricks Asset Bundle — LH Nautical
+# Infraestrutura de orquestração configurada como código (IaC)
+# Deploy automatizado via Bitbucket Pipelines
+
+bundle:
+  name: lh-nautical
+
+# ── Definição dos ambientes de deploy ────────────────────────────────────────
+targets:
+  dev:
+    mode: development
+    default: true
+    resources:
+      jobs:
+        lh_nautical_bronze_ingestion:
+          schedule:
+            pause_status: PAUSED
+          tasks:
+            - task_key: run_ingestion
+              spark_python_task:
+                python_file: ./src/ingestion/ingest_bronze.py
+                parameters:
+                  - "--catalog"
+                  - "dev"
+        lh_nautical_forecast_training:
+          schedule:
+            pause_status: PAUSED
+          
+
+  prd:
+    mode: production
+    workspace:
+      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
+    resources:
+      jobs:
+        lh_nautical_bronze_ingestion:
+          schedule:
+            pause_status: UNPAUSED
+          tasks:
+            - task_key: run_ingestion
+              spark_python_task:
+                python_file: ./src/ingestion/ingest_bronze.py
+                parameters:
+                  - "--catalog"
+                  - "prd"
+        lh_nautical_forecast_training:
+          schedule:
+            pause_status: PAUSED
+          
+
+# — Recursos: Jobs ———————————————————————————————————————————————————————
+resources:
+  jobs:
+    lh_nautical_bronze_ingestion:
+      name: "${bundle.environment}_lh_nautical_bronze_ingestion"
+
+      tasks:
+        - task_key: run_ingestion
+          description: "Extrai as 13 tabelas do SQL Server e grava na camada Bronze"
+          environment_key: default
+
+          spark_python_task:
+            python_file: ./src/ingestion/ingest_bronze.py
+
+          # Retry automático em caso de falha — ver FLUXO_JOBS.md
+          max_retries: 1
+          min_retry_interval_millis: 300000  # 5 minutos em milissegundos
+
+        - task_key: dbt_seed
+          description: "Carrega os seeds do projeto dbt (categoria_correcoes, feriados_moveis)"
+          environment_key: default
+          max_retries: 1
+          min_retry_interval_millis: 300000
+          depends_on:
+            - task_key: run_ingestion
+          dbt_task:
+            commands:
+              - "dbt deps"
+              - "dbt seed"
+            project_directory: ./dbt/lh_nautical
+            warehouse_id: "a9d011bce8dcd209"
+            catalog: "${bundle.environment}"
+            schema: silver
+
+        - task_key: dbt_run
+          description: "Executa os modelos das camadas Staging, Intermediate e Marts"
+          environment_key: default
+          max_retries: 1
+          min_retry_interval_millis: 300000
+          depends_on:
+            - task_key: dbt_seed
+          dbt_task:
+            commands:
+              - "dbt deps"
+              - "dbt run"
+            project_directory: ./dbt/lh_nautical
+            warehouse_id: "a9d011bce8dcd209"
+            catalog: "${bundle.environment}"
+            schema: silver
+
+        - task_key: dbt_test
+          description: "Executa os testes genéricos e singulares do projeto dbt"
+          environment_key: default
+          max_retries: 1
+          min_retry_interval_millis: 300000
+          depends_on:
+            - task_key: dbt_run
+          dbt_task:
+            commands:
+              - "dbt deps"
+              - "dbt test"
+            project_directory: ./dbt/lh_nautical
+            warehouse_id: "a9d011bce8dcd209"
+            catalog: "${bundle.environment}"
+            schema: silver
+
+        - task_key: dbt_build
+          description: "Ciclo de vida completo (seed+run+test) como checagem final de consistência"
+          max_retries: 1
+          min_retry_interval_millis: 300000
+          environment_key: default
+          depends_on:
+            - task_key: dbt_test
+          dbt_task:
+            commands:
+              - "dbt deps"
+              - "dbt build"
+            project_directory: ./dbt/lh_nautical
+            warehouse_id: "a9d011bce8dcd209"
+            catalog: "${bundle.environment}"
+            schema: silver
+
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "2"
+            dependencies:
+              - "dbt-databricks"
+            
+
+      # Alerta por e-mail em caso de falha
+      email_notifications:
+        on_failure:
+          - renan_kramer@hotmail.com
+          - brunasanog.contato@gmail.com
+          - erikacatarina98@gmail.com
+          - carlaliradev@gmail.com
+
+      # Agendamento diário às 6h horário de Brasília
+      schedule:
+        quartz_cron_expression: "0 0 6 * * ?"
+        timezone_id: "America/Sao_Paulo"
+        pause_status: PAUSED
+
+    lh_nautical_forecast_training:
+      name: "${bundle.environment}_lh_nautical_forecast_training"
+
+      tasks:
+        - task_key: treino_store
+          description: "Estudo Optuna (Ridge) para o pipeline de loja, com cada trial logado no MLflow"
+          environment_key: forecast_env
+          max_retries: 1
+          min_retry_interval_millis: 300000
+          spark_python_task:
+            python_file: ./src/forecast/treino.py
+            parameters:
+              - "--location-type"
+              - "store"
+              - "--n-trials"
+              - "20"
+              - "--catalog"
+              - "${bundle.environment}"
+
+        - task_key: treino_warehouse
+          description: "Estudo Optuna (Ridge) para o pipeline de centro de distribuição, com cada trial logado no MLflow"
+          environment_key: forecast_env
+          max_retries: 1
+          min_retry_interval_millis: 300000
+          spark_python_task:
+            python_file: ./src/forecast/treino.py
+            parameters:
+              - "--location-type"
+              - "warehouse"
+              - "--n-trials"
+              - "20"
+              - "--catalog"
+              - "${bundle.environment}"
+
+      environments:
+        - environment_key: forecast_env
+          spec:
+            environment_version: "2"
+            dependencies:
+              - "optuna"
+              - "scikit-learn"
+              - "mlflow"
+              - "lightgbm"
+              - "catboost"
+
+      email_notifications:
+        on_failure:
+          - renan_kramer@hotmail.com
+          - brunasanog.contato@gmail.com
+          - erikacatarina98@gmail.com
+          - carlaliradev@gmail.com
+
+      # Mensal, alinhado à frequência do forecast — pausado em dev,
+      # Job único mensal (treino condicional + inferência).
+      schedule:
+        quartz_cron_expression: "0 0 7 1 * ?"
+        timezone_id: "America/Sao_Paulo"
+        pause_status: PAUSED
+
+    lh_nautical_backtesting:
+      name: "${bundle.environment}_lh_nautical_backtesting"
+
+      tasks:
+        - task_key: backtesting_store
+          environment_key: forecast_env
+          spark_python_task:
+            python_file: ./src/forecast/backtesting.py
+            parameters:
+              - "--location-type"
+              - "store"
+              - "--catalog"
+              - "${bundle.environment}"
+
+        - task_key: backtesting_warehouse
+          environment_key: forecast_env
+          spark_python_task:
+            python_file: ./src/forecast/backtesting.py
+            parameters:
+              - "--location-type"
+              - "warehouse"
+              - "--catalog"
+              - "${bundle.environment}"
+
+      environments:
+        - environment_key: forecast_env
+          spec:
+            environment_version: "2"
+            dependencies:
+              - "catboost"
+              - "mlflow"
+
+    lh_nautical_quantis_incerteza:
+      name: "${bundle.environment}_lh_nautical_quantis_incerteza"
+
+      tasks:
+        - task_key: quantis_store
+          environment_key: forecast_env
+          spark_python_task:
+            python_file: ./src/forecast/quantis.py
+            parameters:
+              - "--location-type"
+              - "store"
+              - "--catalog"
+              - "${bundle.environment}"
+
+        - task_key: quantis_warehouse
+          environment_key: forecast_env
+          spark_python_task:
+            python_file: ./src/forecast/quantis.py
+            parameters:
+              - "--location-type"
+              - "warehouse"
+              - "--catalog"
+              - "${bundle.environment}"
+
+      environments:
+        - environment_key: forecast_env
+          spec:
+            environment_version: "2"
+            dependencies:
+              - "catboost"
+              - "mlflow"
+
+    lh_nautical_diagnosticos_premissas:
+      name: "${bundle.environment}_lh_nautical_diagnosticos_premissas"
+
+      tasks:
+        - task_key: premissas_store
+          environment_key: forecast_env
+          spark_python_task:
+            python_file: ./src/forecast/diagnosticos_premissas.py
+            parameters: ["--location-type", "store", "--catalog", "${bundle.environment}"]
+
+        - task_key: premissas_warehouse
+          environment_key: forecast_env
+          spark_python_task:
+            python_file: ./src/forecast/diagnosticos_premissas.py
+            parameters: ["--location-type", "warehouse", "--catalog", "${bundle.environment}"]
+
+      environments:
+        - environment_key: forecast_env
+          spec:
+            environment_version: "2"
+            dependencies:
+              - "catboost"
+              - "lightgbm"
+              - "scikit-learn"
+              - "statsmodels"
+              - "mlflow"
+
+    lh_nautical_producao_mensal:
+      name: "${bundle.environment}_lh_nautical_producao_mensal"
+
+      tasks:
+        - task_key: treino_condicional_store
+          environment_key: forecast_env
+          spark_python_task:
+            python_file: ./src/forecast/treino_condicional.py
+            parameters: ["--location-type", "store", "--catalog", "${bundle.environment}"]
+
+        - task_key: treino_condicional_warehouse
+          environment_key: forecast_env
+          spark_python_task:
+            python_file: ./src/forecast/treino_condicional.py
+            parameters: ["--location-type", "warehouse", "--catalog", "${bundle.environment}"]
+
+        - task_key: inferencia_store
+          depends_on: [{task_key: treino_condicional_store}]
+          environment_key: forecast_env
+          spark_python_task:
+            python_file: ./src/forecast/inferencia.py
+            parameters: ["--location-type", "store", "--catalog", "${bundle.environment}"]
+
+        - task_key: inferencia_warehouse
+          depends_on: [{task_key: treino_condicional_warehouse}]
+          environment_key: forecast_env
+          spark_python_task:
+            python_file: ./src/forecast/inferencia.py
+            parameters: ["--location-type", "warehouse", "--catalog", "${bundle.environment}"]
+
+      environments:
+        - environment_key: forecast_env
+          spec:
+            environment_version: "2"
+            dependencies:
+              - "catboost"
+              - "mlflow"
+              - "python-dateutil"
+
+      schedule:
+        quartz_cron_expression: "0 0 7 1 * ?"
+        timezone_id: "America/Sao_Paulo"
+        pause_status: UNPAUSED
+
+    lh_nautical_rag_chunking:
+      name: "${bundle.environment}_lh_nautical_rag_chunking"
+
+      tasks:
+        - task_key: chunking
+          environment_key: rag_env
+          spark_python_task:
+            python_file: ./src/rag/chunking.py
+            parameters: ["--catalog", "${bundle.environment}"]
+            
+        - task_key: indexacao_vetorial
+          depends_on: [{task_key: chunking}]
+          environment_key: rag_env
+          spark_python_task:
+            python_file: ./src/rag/indexacao.py
+            parameters: ["--catalog", "${bundle.environment}"]
+
+      environments:
+        - environment_key: rag_env
+          spec:
+            environment_version: "2"
+            dependencies:
+              - "python-docx"
+              - "databricks-ai-search"
